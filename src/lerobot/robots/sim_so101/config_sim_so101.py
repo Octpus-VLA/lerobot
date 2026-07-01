@@ -127,3 +127,16 @@ class SimSO101Config(RobotConfig):
     # pose is tuned for the default; very different distances may not frame the cube in
     # wrist_cam at start, and the cube must stay within the arm's ~0.40 m reach.
     belt_distance: float = 0.14
+
+    # End the episode as soon as the tracked success body has left the belt — i.e.
+    # it settled clearly below its resting height on the belt (fell off the far end
+    # to the floor, or was placed down into the box). For the conveyor task the
+    # episode is only meaningful while the cube is on the belt, so this bounds the
+    # rollout by "cube on belt" instead of a fixed horizon (the eval strategy calls
+    # check_terminated()). False by default so other scenes/tasks are unaffected.
+    # Needs a tracked body (`success` set); reuses success.settle_speed_mps to
+    # require the body to be at rest (a cube riding the belt isn't "dropped").
+    end_on_drop: bool = False
+    # Metres below the body's belt resting height that counts as "off the belt".
+    # 0.02 cleanly separates on-belt (~0 drop) from floor/box (~0.03-0.04 drop).
+    drop_margin_m: float = 0.02

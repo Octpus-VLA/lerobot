@@ -163,12 +163,23 @@ class EvalStrategy(RolloutStrategy):
                     success = True
                     success_step = step
 
+            # Robot-driven early termination (e.g. sim: the cube left the belt).
+            # Checked after success so a place-in-box settle can register first.
+            if self._check_terminated(robot):
+                break
+
             dt = time.perf_counter() - loop_start
             if (sleep_t := control_interval - dt) > 0:
                 precise_sleep(sleep_t)
             timestamp = time.perf_counter() - start_t
 
         return EpisodeResult(episode=episode, success=success, success_step=success_step, num_steps=step)
+
+    def _check_terminated(self, robot) -> bool:
+        """Optional robot hook to end an episode early. Robots without a
+        ``check_terminated()`` (e.g. real hardware) never terminate early."""
+        check = getattr(robot.inner, "check_terminated", None)
+        return bool(check()) if check is not None else False
 
     def _check_success(self, robot) -> bool:
         check = getattr(robot.inner, "check_success", None)

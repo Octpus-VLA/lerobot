@@ -293,6 +293,28 @@ class SimSO101(Robot):
         z = float(self._data.qpos[addr + 2])
         return (z - self._success_rest_z) >= self.config.success.height_m
 
+    @check_if_not_connected
+    def check_terminated(self) -> bool:
+        """Whether the episode should end early because the tracked body left the belt.
+
+        Privileged sim-state read for evaluation only (like `check_success`, never
+        exposed through `get_observation`). Returns True once the tracked body has
+        come to rest clearly below its belt resting height — it fell off the belt to
+        the floor, or was placed down into the box. Requires ``end_on_drop`` and a
+        tracked body; returns False while the cube rides the belt (not below belt
+        height) or is lifted/carried (above it), or while it's still moving (so a
+        cube tumbling off the edge only ends the episode once it has settled, giving
+        `check_success`'s place_in_box its settle window first). Lets the conveyor
+        task run exactly as long as the cube is on the belt.
+        """
+        if not self.config.end_on_drop or self._success_qpos_addr is None:
+            return False
+        z = float(self._data.qpos[self._success_qpos_addr + 2])
+        if (self._success_rest_z - z) < self.config.drop_margin_m:
+            return False
+        vel = self._data.qvel[self._success_dofadr : self._success_dofadr + 3]
+        return bool(np.linalg.norm(vel) < self.config.success.settle_speed_mps)
+
     def _gripper_sim_to_robot(self, rad: float) -> float:
         lo, hi = self._gripper_range
         return 100.0 * (rad - lo) / (hi - lo)
