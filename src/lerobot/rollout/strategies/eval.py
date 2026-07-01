@@ -94,6 +94,13 @@ class EvalStrategy(RolloutStrategy):
                     self._interpolator.reset()
                     self._engine.resume()
 
+                    # Robot-side scene reset between episodes (e.g. sim: re-place the
+                    # cube on the belt, arm to home). No-op for robots without a
+                    # reset() (real hardware uses return_to_initial_position below).
+                    reset_scene = getattr(robot.inner, "reset", None)
+                    if callable(reset_scene):
+                        reset_scene()
+
                     result = self._run_episode(ctx, robot, episode, dataset, single_task)
                     self._results.append(result)
                     logger.info(

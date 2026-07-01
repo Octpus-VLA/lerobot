@@ -59,6 +59,13 @@ class SimSO101(Robot):
         self._success_rest_z: float | None = None
         self._box_bounds: tuple[float, float, float, float, float] | None = None
         self._belt_qpos_addr: int | None = None
+        # Cached at connect() so reset() can re-apply the per-episode start state
+        # (home keyframe + cube placement + belt command) without reloading the model.
+        self._home_key_id: int = -1
+        self._belt_center_x: float | None = None
+        self._cube_qadr: int | None = None
+        self._cube_dofadr: int | None = None
+        self._belt_act_id: int = -1
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -116,6 +123,7 @@ class SimSO101(Robot):
         # (e.g. one where an eye-in-hand camera actually faces the work area instead of
         # wherever zero-angle-on-every-joint happens to point it).
         home_key_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_KEY, "home")
+        self._home_key_id = home_key_id
         if home_key_id >= 0:
             mujoco.mj_resetDataKeyframe(self._model, self._data, home_key_id)
 
@@ -123,10 +131,13 @@ class SimSO101(Robot):
         # centre line in x, and in y either parked directly in front of the robot
         # (y=0, graspable for static eval) when the belt is stopped, or fed from the
         # -y end so it travels through the reachable region when the belt is running.
+        self._belt_center_x = belt_center_x
         if belt_center_x is not None:
             cube_joint_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, "cube_free")
             if cube_joint_id >= 0:
                 cube_qadr = int(self._model.jnt_qposadr[cube_joint_id])
+                self._cube_qadr = cube_qadr
+                self._cube_dofadr = int(self._model.jnt_dofadr[cube_joint_id])
                 self._data.qpos[cube_qadr] = belt_center_x
                 self._data.qpos[cube_qadr + 1] = -0.20 if self.config.belt_speed != 0 else 0.0
 
@@ -134,6 +145,7 @@ class SimSO101(Robot):
         # standing command, not a per-step one, so set it once here rather than in
         # send_action(). No-op on scenes without a "belt_motor" actuator.
         belt_act_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, "belt_motor")
+        self._belt_act_id = belt_act_id
         if belt_act_id >= 0:
             self._data.ctrl[belt_act_id] = self.config.belt_speed
             # The slide joint would physically translate the belt body (and its rendered
@@ -223,6 +235,38 @@ class SimSO101(Robot):
                 )
 
         logger.info(f"{self} connected (sim, {self._n_substeps} substeps per control step).")
+
+    @check_if_not_connected
+    def reset(self) -> None:
+        """Restore the per-episode start state: home keyframe (arm + cube), cube
+        placement on the belt, cube at rest, and the standing belt command.
+
+        The eval/rollout loop calls this between episodes. Without it a moving-belt
+        multi-episode run breaks: episode 0's cube travels off the belt and every
+        later episode would start with the cube already gone (on the floor / in the
+        box), so nothing is on the belt to grasp and, with end_on_drop, the episode
+        would terminate immediately. Only resets sim *data* (qpos/qvel/ctrl) — the
+        one-time model layout shift from belt_distance stays as set at connect().
+        """
+        import mujoco
+
+        if self._home_key_id >= 0:
+            mujoco.mj_resetDataKeyframe(self._model, self._data, self._home_key_id)
+        if self._belt_center_x is not None and self._cube_qadr is not None:
+            self._data.qpos[self._cube_qadr] = self._belt_center_x
+            self._data.qpos[self._cube_qadr + 1] = -0.20 if self.config.belt_speed != 0 else 0.0
+            # Zero the cube's free-joint velocity (6 dofs) so it starts at rest.
+            if self._cube_dofadr is not None:
+                self._data.qvel[self._cube_dofadr : self._cube_dofadr + 6] = 0.0
+        if self._belt_act_id >= 0:
+            self._data.ctrl[self._belt_act_id] = self.config.belt_speed
+            if self._belt_qpos_addr is not None:
+                self._data.qpos[self._belt_qpos_addr] = 0.0
+        mujoco.mj_forward(self._model, self._data)
+        # The cube's belt resting height is fixed, but recapture defensively so
+        # check_success / check_terminated stay consistent after a reset.
+        if self._success_qpos_addr is not None:
+            self._success_rest_z = float(self._data.qpos[self._success_qpos_addr + 2])
 
     @property
     def is_calibrated(self) -> bool:
